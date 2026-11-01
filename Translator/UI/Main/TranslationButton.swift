@@ -3,36 +3,12 @@ import SwiftUI
 struct TranslationButton: View {
     let isEnabled: Bool
     let isTranslating: Bool
-    let autoSubmitPhase: AutoSubmitPhase
     let action: () -> Void
 
     private let scale: CGFloat = 2.0 / 3.0
 
-    private var countdownStartedAt: Date? {
-        if case .countdown(let startedAt) = autoSubmitPhase {
-            return startedAt
-        }
-        return nil
-    }
-
     var body: some View {
         ZStack {
-            if let countdownStartedAt {
-                TimelineView(.animation(minimumInterval: 1.0 / 30.0)) { context in
-                    let elapsed = context.date.timeIntervalSince(countdownStartedAt)
-                    let progress = max(0, min(1, 1 - elapsed / 5.0))
-                    Circle()
-                        .trim(from: 0, to: progress)
-                        .stroke(
-                            Color.accentColor,
-                            style: StrokeStyle(lineWidth: 4 * scale, lineCap: .round)
-                        )
-                        .rotationEffect(.degrees(-90))
-                }
-                .frame(width: 68 * scale, height: 68 * scale)
-                .transition(.opacity)
-            }
-
             Button(action: action) {
                 ZStack {
                     Circle()
@@ -55,7 +31,6 @@ struct TranslationButton: View {
             .accessibilityLabel("翻译")
         }
         .frame(width: 76 * scale, height: 76 * scale)
-        .animation(.easeInOut(duration: 0.18), value: countdownStartedAt != nil)
     }
 }
 

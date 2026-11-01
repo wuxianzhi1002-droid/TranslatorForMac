@@ -1,0 +1,42 @@
+name: macOS build
+
+on:
+  push:
+    branches: [main, "feature/**"]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: macos-15
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Show Xcode project schemes
+        run: xcodebuild -list -project Translator.xcodeproj
+
+      - name: Build macOS app
+        run: >-
+          xcodebuild
+          -project Translator.xcodeproj
+          -scheme Translator
+          -configuration Release
+          -destination 'platform=macOS'
+          -derivedDataPath build/DerivedData
+          CODE_SIGNING_ALLOWED=NO
+          build
+
+      - name: Package app
+        run: ditto -c -k --sequesterRsrc --keepParent build/DerivedData/Build/Products/Release/Translator.app Translator-macOS.zip
+
+      - name: Upload app artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Translator-macOS
+          path: Translator-macOS.zip
+          if-no-files-found: error

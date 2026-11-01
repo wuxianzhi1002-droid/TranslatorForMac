@@ -11,11 +11,11 @@
 | 最低系统 | macOS 14.0 |
 | Swift 语言版本 | Swift 5 |
 | Bundle ID | `AI.Translator` |
-| App Sandbox | 开启 |
+| App Sandbox | 关闭（全局辅助功能选区读取所需） |
 | 第三方依赖 | 无 |
 | 设置 Schema | 3 |
 
-工程启用了 `LSUIElement`，因此应用不显示普通 Dock 图标。`TranslatorApp` 只提供应用入口和设置命令，实际菜单栏、主窗口与设置窗口由 AppKit 控制。
+工程启用了 `LSUIElement`，因此应用不显示普通 Dock 图标。由于 Apple 将沙盒内辅助应用使用 Accessibility API 列为不兼容能力，本项目为读取其他应用真实选区采用非沙盒直接分发方式。
 
 ## 目录与职责
 
@@ -23,11 +23,12 @@
 Translator/
 ├── App/
 │   ├── AppDelegate.swift              菜单栏入口、窗口控制器生命周期
-│   ├── AppState.swift                 全局界面状态、翻译与自动提交状态机
-│   ├── MainWindowController.swift     主窗口外观、居中、置顶和隐藏行为
+│   ├── AppState.swift                 全局界面状态、选区文本与自动翻译
+│   ├── SelectionMonitor.swift         AX 选区轮询和稳定状态防抖
+│   ├── SelectionDotWindowController.swift 红点悬停入口
+│   ├── MainWindowController.swift     非激活悬浮翻译卡片
 │   └── SettingsWindowController.swift 设置窗口
 ├── Core/
-│   ├── Clipboard/ClipboardMonitor.swift       剪贴板轮询
 │   ├── Networking/NetworkDiagnosticLogger.swift 日志开关、脱敏和轮换
 │   ├── Networking/TranslationClient.swift     请求组装、流解析与兼容回退
 │   ├── Persistence/SettingsStore.swift         UserDefaults 编解码
@@ -48,23 +49,24 @@ Xcode 工程使用文件系统同步的源文件分组，新建到 `Translator/`
 1. `TranslatorApp` 创建 `AppDelegate`。
 2. `AppDelegate.applicationDidFinishLaunching` 将应用设为 accessory，创建菜单栏图标并连接设置回调。
 3. `AppState` 从 `SettingsStore` 读取设置、规范化选中项，并同步日志开关。
-4. 配置不完整时，启动后约 0.25 秒自动打开设置窗口。
-5. 用户单击菜单栏图标时才延迟创建主窗口。
+4. 启动全局 AX 选区监视；首次启动时请求辅助功能授权。
+5. 配置不完整时，启动后约 0.25 秒自动打开设置窗口。
+6. 选区稳定约 120 ms 后显示红点；悬停红点时才创建并显示翻译卡片。
 
-主窗口创建时直接调用 `window.center()`。不再恢复历史 frame，避免显示器排列或分辨率改变后读回已经越界的坐标。用户在同一次应用运行中仍可自由移动窗口；下次启动会重新居中。
+翻译卡片是非激活 `NSPanel`，尽量不抢回前台应用焦点。鼠标离开红点和卡片后卡片自动隐藏；菜单栏左键用于打开设置。
 
-关闭主窗口实际上调用 `orderOut` 隐藏窗口，应用不会退出。隐藏时停止剪贴板监视。
+翻译卡片按需创建并显示；鼠标离开红点和卡片后自动隐藏，菜单栏应用继续运行。退出应用时停止选区监视并取消翻译任务。
 
 ## 状态与翻译数据流
 
 `AppState` 标注为 `@MainActor`，是界面状态的唯一协调点。主要流程如下：
 
 ```text
-输入文字/采用剪贴板
+AXUIElement 读取焦点控件的 AXSelectedText
         ↓
-生成 TranslationSignature
+选区连续稳定约 120 ms → 红点 → 悬停后载入原文
         ↓
-手动提交，或静默 2 秒 + 倒计时 5 秒
+原文编辑停止约 500 ms 后自动提交（按钮可立即提交）
         ↓
 PromptEngine 校验并替换三个变量
         ↓
@@ -81,10 +83,10 @@ URLSession.AsyncBytes 逐行消费响应
 
 - 避免对完全相同的成功请求重复提交。
 - 标记当前结果是否已经过期。
-- 阻止自动提交在同一个失败请求上无限重试。
+- 阻止同一个失败请求被自动无限重试。
 - 在设置或输入变化后安全地安排下一次自动翻译。
 
-取消任务时要同时考虑输入静默任务、倒计时任务和网络翻译任务。新增会影响请求结果的设置时，也应把它加入 `TranslationSignature`。
+取消任务时要同时考虑编辑防抖任务和网络翻译任务。新增会影响请求结果的设置时，也应把它加入 `TranslationSignature`。
 
 ## URL 与请求体
 

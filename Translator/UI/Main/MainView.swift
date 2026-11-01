@@ -23,7 +23,6 @@ struct MainView: View {
                 TranslationButton(
                     isEnabled: appState.isTranslateButtonEnabled,
                     isTranslating: appState.isTranslating,
-                    autoSubmitPhase: appState.autoSubmitPhase,
                     action: appState.manualTranslate
                 )
                 .position(x: geometry.size.width / 2, y: geometry.size.height / 2 + 4)
@@ -33,7 +32,8 @@ struct MainView: View {
                 }
             }
         }
-        .frame(minWidth: 820, minHeight: 380)
+        .frame(minWidth: 620, minHeight: 350)
+        .onHover { appState.onTranslationPanelHoverChanged?($0) }
     }
 
     private var sourcePane: some View {
@@ -54,15 +54,6 @@ struct MainView: View {
                     appState.clearSource()
                 }
                 .disabled(appState.sourceText.isEmpty)
-
-                Toggle(
-                    "自动提交",
-                    isOn: Binding(
-                        get: { appState.settings.autoSubmitEnabled },
-                        set: appState.setAutoSubmitEnabled
-                    )
-                )
-                .toggleStyle(.checkbox)
 
                 Spacer(minLength: 8)
 
@@ -90,59 +81,27 @@ struct MainView: View {
     }
 
     private var sourceEditor: some View {
-        ZStack(alignment: .bottom) {
-            ZStack(alignment: .topLeading) {
-                TextEditor(
-                    text: Binding(
-                        get: { appState.sourceText },
-                        set: appState.userEditedSource
-                    )
+        ZStack(alignment: .topLeading) {
+            TextEditor(
+                text: Binding(
+                    get: { appState.sourceText },
+                    set: appState.userEditedSource
                 )
-                .font(.system(size: 15))
-                .scrollContentBackground(.hidden)
-                .padding(.horizontal, 12)
-                .padding(.vertical, 9)
+            )
+            .font(.system(size: 15))
+            .scrollContentBackground(.hidden)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 9)
 
-                if appState.sourceText.isEmpty {
-                    Text("输入文本…")
-                        .foregroundStyle(.tertiary)
-                        .font(.system(size: 15))
-                        .padding(.leading, 20)
-                        .padding(.top, 18)
-                        .allowsHitTesting(false)
-                }
-            }
-
-            if let suggestion = appState.clipboardSuggestion {
-                Button(action: appState.pasteClipboardSuggestion) {
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text("剪贴板内容：")
-                            .font(.caption.weight(.semibold))
-                            .foregroundStyle(.primary)
-                        Text(suggestion.text)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(2)
-                            .multilineTextAlignment(.leading)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                    }
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 10)
-                    .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-                    .overlay {
-                        RoundedRectangle(cornerRadius: 12, style: .continuous)
-                            .strokeBorder(.white.opacity(0.16), lineWidth: 1)
-                    }
-                    .shadow(color: .black.opacity(0.2), radius: 10, y: 5)
-                }
-                .buttonStyle(.plain)
-                .padding(.horizontal, 18)
-                .padding(.bottom, 14)
-                .transition(.move(edge: .bottom).combined(with: .opacity))
-                .help("点击后覆盖源文本")
+            if appState.sourceText.isEmpty {
+                Text("选中文字后悬停红点，或在此修改原文…")
+                    .foregroundStyle(.tertiary)
+                    .font(.system(size: 15))
+                    .padding(.leading, 20)
+                    .padding(.top, 18)
+                    .allowsHitTesting(false)
             }
         }
-        .animation(.easeOut(duration: 0.2), value: appState.clipboardSuggestion != nil)
     }
 
     private var targetPane: some View {

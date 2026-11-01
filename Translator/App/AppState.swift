@@ -12,12 +12,6 @@ enum TranslationState: Equatable {
 enum AutoSubmitPhase: Equatable {
     case idle
     case quietWaiting
-    case countdown(startedAt: Date)
-}
-
-struct ClipboardSuggestion: Equatable {
-    let changeCount: Int
-    let text: String
 }
 
 private struct TranslationSignature: Hashable {
@@ -47,46 +41,39 @@ final class AppState: ObservableObject {
     @Published private(set) var translationState: TranslationState = .idle
     @Published private(set) var autoSubmitPhase: AutoSubmitPhase = .idle
     @Published private(set) var isUserTyping = false
-    @Published private(set) var clipboardSuggestion: ClipboardSuggestion?
     @Published private(set) var persistenceErrorMessage: String?
 
     private let settingsStore: SettingsStore
     private let keychainStore: KeychainStore
     private let translationClient: TranslationClient
-    private let clipboardMonitor: ClipboardMonitor
     private var sideEffectsEnabled = false
     private var typingIdleTask: Task<Void, Never>?
     private var quietWaitTask: Task<Void, Never>?
-    private var countdownTask: Task<Void, Never>?
     private var translationTask: Task<Void, Never>?
     private var lastSuccessfulSignature: TranslationSignature?
     private var displayedResultSignature: TranslationSignature?
     private var autoRetryBlockedSignature: TranslationSignature?
-    private var suppressedClipboardChangeCount: Int?
-    private var isMainWindowVisible = false
 
     var onOpenSettings: (() -> Void)?
     var onAlwaysOnTopChanged: ((Bool) -> Void)?
+    var onTranslationPanelHoverChanged: ((Bool) -> Void)?
 
     convenience init() {
         self.init(
             settingsStore: SettingsStore(),
             keychainStore: KeychainStore(),
-            translationClient: TranslationClient(),
-            clipboardMonitor: ClipboardMonitor()
+            translationClient: TranslationClient()
         )
     }
 
     init(
         settingsStore: SettingsStore,
         keychainStore: KeychainStore,
-        translationClient: TranslationClient,
-        clipboardMonitor: ClipboardMonitor
+        translationClient: TranslationClient
     ) {
         self.settingsStore = settingsStore
         self.keychainStore = keychainStore
         self.translationClient = translationClient
-        self.clipboardMonitor = clipboardMonitor
 
         var loadedSettings = settingsStore.load()
         loadedSettings.normalizeSelections()
@@ -99,7 +86,6 @@ final class AppState: ObservableObject {
     deinit {
         typingIdleTask?.cancel()
         quietWaitTask?.cancel()
-        countdownTask?.cancel()
         translationTask?.cancel()
     }
 
@@ -173,16 +159,9 @@ final class AppState: ObservableObject {
         }
     }
 
-    func countdownProgress(at date: Date) -> Double? {
-        guard case .countdown(let startedAt) = autoSubmitPhase else { return nil }
-        let elapsed = date.timeIntervalSince(startedAt)
-        return max(0, min(1, 1 - elapsed / 5.0))
-    }
-
     func userEditedSource(_ newValue: String) {
         guard newValue != sourceText else { return }
         sourceText = newValue
-        interruptClipboardSuggestion()
         markCurrentRequestAsChanged()
         isUserTyping = true
         cancelQuietWaitAndCountdown()
@@ -195,20 +174,39 @@ final class AppState: ObservableObject {
         }
 
         let expectedSignature = currentSignature
-        if settings.autoSubmitEnabled {
-            autoSubmitPhase = .quietWaiting
-        }
+        autoSubmitPhase = .quietWaiting
         typingIdleTask = Task { [weak self] in
             do {
-                try await Task.sleep(for: .seconds(2))
+            try await Task.sleep(for: .milliseconds(500))
             } catch {
                 return
             }
             guard let self else { return }
             self.isUserTyping = false
             guard self.currentSignature == expectedSignature else { return }
-            self.beginCountdownIfEligible(for: expectedSignature)
+            self.autoSubmitPhase = .idle
+            self.beginTranslation()
         }
+    }
+
+    func loadSelectedText(_ text: String) {
+        let text = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return }
+        cancelAllAutomaticTasks()
+        translationTask?.cancel()
+        translationTask = nil
+        sourceText = text
+        translatedText = ""
+        translationState = .idle
+        displayedResultSignature = nil
+        lastSuccessfulSignature = nil
+        autoRetryBlockedSignature = nil
+        markCurrentRequestAsChanged()
+    }
+
+    func translateCurrentSelection() {
+        isUserTyping = false
+        beginTranslation()
     }
 
     func clearSource() {
@@ -219,19 +217,7 @@ final class AppState: ObservableObject {
         lastSuccessfulSignature = nil
         autoRetryBlockedSignature = nil
         isUserTyping = false
-        interruptClipboardSuggestion()
         cancelAllAutomaticTasks()
-    }
-
-    func pasteClipboardSuggestion() {
-        guard let suggestion = clipboardSuggestion else { return }
-        suppressedClipboardChangeCount = suggestion.changeCount
-        clipboardSuggestion = nil
-        sourceText = suggestion.text
-        isUserTyping = false
-        markCurrentRequestAsChanged()
-        typingIdleTask?.cancel()
-        scheduleQuietWaitIfEligible()
     }
 
     func manualTranslate() {
@@ -246,13 +232,6 @@ final class AppState: ObservableObject {
         let pasteboard = NSPasteboard.general
         pasteboard.clearContents()
         pasteboard.setString(translatedText, forType: .string)
-        clipboardMonitor.markCurrentAsObserved()
-        suppressedClipboardChangeCount = pasteboard.changeCount
-        clipboardSuggestion = nil
-    }
-
-    func setAutoSubmitEnabled(_ isEnabled: Bool) {
-        settings.autoSubmitEnabled = isEnabled
     }
 
     func setAlwaysOnTop(_ isEnabled: Bool) {
@@ -362,25 +341,10 @@ final class AppState: ObservableObject {
         onOpenSettings?()
     }
 
-    func mainWindowDidOpen() {
-        isMainWindowVisible = true
-        clipboardMonitor.start { [weak self] snapshot in
-            self?.evaluateClipboard(snapshot, allowSuppressedVersion: false)
-        }
-        evaluateClipboard(clipboardMonitor.currentSnapshot, allowSuppressedVersion: true)
-    }
-
-    func mainWindowDidHide() {
-        isMainWindowVisible = false
-        clipboardMonitor.stop()
-        clipboardSuggestion = nil
-    }
-
     func cancelAllWork() {
         cancelAllAutomaticTasks()
         translationTask?.cancel()
         translationTask = nil
-        clipboardMonitor.stop()
     }
 
     private var currentSignature: TranslationSignature? {
@@ -417,22 +381,11 @@ final class AppState: ObservableObject {
             NetworkDiagnosticLogger.shared.setEnabled(settings.resolvedNetworkDiagnosticsEnabled)
         }
 
-        if oldSettings.autoSubmitEnabled != settings.autoSubmitEnabled {
-            if settings.autoSubmitEnabled {
-                if !isUserTyping { scheduleQuietWaitIfEligible() }
-            } else {
-                cancelQuietWaitAndCountdown()
-            }
-        }
-
         if signature(using: oldSettings) != currentSignature {
             markCurrentRequestAsChanged()
             if !isUserTyping { scheduleQuietWaitIfEligible() }
         }
 
-        if clipboardSuggestion != nil && !clipboardConditionsAreMet(for: clipboardSuggestion?.text) {
-            interruptClipboardSuggestion()
-        }
     }
 
     private func markCurrentRequestAsChanged() {
@@ -446,8 +399,8 @@ final class AppState: ObservableObject {
 
     private func scheduleQuietWaitIfEligible() {
         cancelQuietWaitAndCountdown()
-        guard settings.autoSubmitEnabled,
-              isTranslateButtonEnabled,
+        guard currentSignature != nil,
+              !sourceText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
               !isUserTyping,
               let expectedSignature = currentSignature,
               expectedSignature != autoRetryBlockedSignature else {
@@ -458,40 +411,11 @@ final class AppState: ObservableObject {
         autoSubmitPhase = .quietWaiting
         quietWaitTask = Task { [weak self] in
             do {
-                try await Task.sleep(for: .seconds(2))
+                try await Task.sleep(for: .milliseconds(500))
             } catch {
                 return
             }
             guard let self, self.currentSignature == expectedSignature else { return }
-            self.beginCountdownIfEligible(for: expectedSignature)
-        }
-    }
-
-    private func beginCountdownIfEligible(for expectedSignature: TranslationSignature?) {
-        guard settings.autoSubmitEnabled,
-              isTranslateButtonEnabled,
-              !isUserTyping,
-              let expectedSignature,
-              currentSignature == expectedSignature,
-              expectedSignature != autoRetryBlockedSignature else {
-            autoSubmitPhase = .idle
-            return
-        }
-
-        quietWaitTask?.cancel()
-        quietWaitTask = nil
-        countdownTask?.cancel()
-        let startedAt = Date()
-        autoSubmitPhase = .countdown(startedAt: startedAt)
-        countdownTask = Task { [weak self] in
-            do {
-                try await Task.sleep(for: .seconds(5))
-            } catch {
-                return
-            }
-            guard let self,
-                  self.currentSignature == expectedSignature,
-                  self.isTranslateButtonEnabled else { return }
             self.autoSubmitPhase = .idle
             self.beginTranslation()
         }
@@ -523,7 +447,6 @@ final class AppState: ObservableObject {
         }
 
         cancelAllAutomaticTasks()
-        interruptClipboardSuggestion()
         translatedText = ""
         displayedResultSignature = signature
         translationState = .streaming
@@ -559,43 +482,9 @@ final class AppState: ObservableObject {
         }
     }
 
-    private func evaluateClipboard(_ snapshot: ClipboardSnapshot, allowSuppressedVersion: Bool) {
-        guard isMainWindowVisible else { return }
-        guard clipboardConditionsAreMet(for: snapshot.text) else {
-            clipboardSuggestion = nil
-            suppressedClipboardChangeCount = snapshot.changeCount
-            return
-        }
-        guard allowSuppressedVersion || snapshot.changeCount != suppressedClipboardChangeCount else {
-            return
-        }
-        clipboardSuggestion = ClipboardSuggestion(changeCount: snapshot.changeCount, text: snapshot.text ?? "")
-    }
-
-    private func clipboardConditionsAreMet(for text: String?) -> Bool {
-        guard let text,
-              !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-              text != sourceText,
-              !isUserTyping,
-              !isTranslating,
-              configurationReady else {
-            return false
-        }
-        return true
-    }
-
-    private func interruptClipboardSuggestion() {
-        if let suggestion = clipboardSuggestion {
-            suppressedClipboardChangeCount = suggestion.changeCount
-        }
-        clipboardSuggestion = nil
-    }
-
     private func cancelQuietWaitAndCountdown() {
         quietWaitTask?.cancel()
         quietWaitTask = nil
-        countdownTask?.cancel()
-        countdownTask = nil
         autoSubmitPhase = .idle
     }
 
