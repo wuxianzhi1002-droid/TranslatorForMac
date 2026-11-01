@@ -55,10 +55,11 @@ final class SelectionMonitor {
             kAXFocusedUIElementAttribute as CFString,
             &focusedElementValue
         ) == .success,
-        let focusedElement = focusedElementValue else {
+        let focusedElementValue else {
             observeMissingSelection()
             return
         }
+        let focusedElement = focusedElementValue as! AXUIElement
 
         var focusedPID: pid_t = 0
         AXUIElementGetPid(focusedElement, &focusedPID)
