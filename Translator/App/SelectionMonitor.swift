@@ -55,7 +55,7 @@ final class SelectionMonitor {
             kAXFocusedUIElementAttribute as CFString,
             &focusedElementValue
         ) == .success,
-        let focusedElement = focusedElementValue as? AXUIElement else {
+        let focusedElement = focusedElementValue else {
             observeMissingSelection()
             return
         }
@@ -99,8 +99,8 @@ final class SelectionMonitor {
     private func observeMissingSelection() {
         candidateKey = nil
         deliveredKey = nil
-        if let missingSelectionStartedAt {
-            if Date().timeIntervalSince(missingSelectionStartedAt) >= 0.28 {
+        if let startedAt = missingSelectionStartedAt {
+            if Date().timeIntervalSince(startedAt) >= 0.28 {
                 onSelectionChanged?(nil)
                 missingSelectionStartedAt = nil
             }
