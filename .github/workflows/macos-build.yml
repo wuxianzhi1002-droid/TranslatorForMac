@@ -20,7 +20,7 @@ jobs:
       - name: Show Xcode project schemes
         run: xcodebuild -list -project Translator.xcodeproj
 
-      - name: Build macOS app
+      - name: Build unsigned macOS app
         run: >-
           xcodebuild
           -project Translator.xcodeproj
@@ -31,12 +31,49 @@ jobs:
           CODE_SIGNING_ALLOWED=NO
           build
 
-      - name: Package app
-        run: ditto -c -k --sequesterRsrc --keepParent build/DerivedData/Build/Products/Release/Translator.app Translator-macOS.zip
+      - name: Validate app bundle and package
+        shell: bash
+        run: |
+          set -euo pipefail
 
-      - name: Upload app artifact
+          APP="build/DerivedData/Build/Products/Release/Translator.app"
+          INFO_PLIST="$APP/Contents/Info.plist"
+          test -d "$APP/Contents/MacOS"
+          test -f "$INFO_PLIST"
+          plutil -lint "$INFO_PLIST"
+
+          EXECUTABLE="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$INFO_PLIST")"
+          test -n "$EXECUTABLE"
+          test -x "$APP/Contents/MacOS/$EXECUTABLE"
+          echo "Bundle executable exists and is executable: $EXECUTABLE"
+
+          ditto -c -k --sequesterRsrc --keepParent "$APP" Translator-macOS.zip
+          unzip -tq Translator-macOS.zip
+
+          VERIFY_DIR="$RUNNER_TEMP/translator-package-check"
+          mkdir -p "$VERIFY_DIR"
+          ditto -x -k Translator-macOS.zip "$VERIFY_DIR"
+          VERIFIED_APP="$VERIFY_DIR/Translator.app"
+          test -d "$VERIFIED_APP/Contents/MacOS"
+          plutil -lint "$VERIFIED_APP/Contents/Info.plist"
+          VERIFIED_EXECUTABLE="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$VERIFIED_APP/Contents/Info.plist")"
+          test -x "$VERIFIED_APP/Contents/MacOS/$VERIFIED_EXECUTABLE"
+          echo "Extracted app structure and executable validated."
+
+          shasum -a 256 Translator-macOS.zip > Translator-macOS.zip.sha256
+          cat Translator-macOS.zip.sha256
+
+          if codesign -dv --verbose=2 "$VERIFIED_APP" 2>&1; then
+            echo "::notice::The packaged app reports a code signature; inspect the build settings if an unsigned package was expected."
+          else
+            echo "::notice::The app is intentionally unsigned (CODE_SIGNING_ALLOWED=NO). This is separate from ZIP integrity."
+          fi
+
+      - name: Upload unsigned app artifact and checksum
         uses: actions/upload-artifact@v4
         with:
-          name: Translator-macOS
-          path: Translator-macOS.zip
+          name: Translator-macOS-unsigned
+          path: |
+            Translator-macOS.zip
+            Translator-macOS.zip.sha256
           if-no-files-found: error
