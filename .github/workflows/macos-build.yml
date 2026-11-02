@@ -63,7 +63,7 @@ jobs:
           codesign -dv --verbose=2 "$VERIFIED_APP" 2>&1 || true
 
           # Create a diagnostic alternative: ad-hoc seal the app bundle, with no Developer ID.
-          ADHOC_APP="$RUNNER_TEMP/Translator-adhoc.app"
+          ADHOC_APP="$RUNNER_TEMP/Translator.app"
           ditto "$APP" "$ADHOC_APP"
           codesign --force --deep --sign - --timestamp=none "$ADHOC_APP"
           codesign --verify --deep --strict --verbose=2 "$ADHOC_APP"
