@@ -1,0 +1,94 @@
+name: macOS build
+
+on:
+  push:
+    branches: [main, "feature/**"]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: macos-15
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Show Xcode project schemes
+        run: xcodebuild -list -project Translator.xcodeproj
+
+      - name: Build macOS app without Developer ID signing
+        run: >-
+          xcodebuild
+          -project Translator.xcodeproj
+          -scheme Translator
+          -configuration Release
+          -destination 'platform=macOS'
+          -derivedDataPath build/DerivedData
+          CODE_SIGNING_ALLOWED=NO
+          build
+
+      - name: Package and verify no-Developer-ID builds
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          APP="build/DerivedData/Build/Products/Release/Translator.app"
+          INFO_PLIST="$APP/Contents/Info.plist"
+          test -d "$APP/Contents/MacOS"
+          test -f "$INFO_PLIST"
+          plutil -lint "$INFO_PLIST"
+
+          EXECUTABLE="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$INFO_PLIST")"
+          test -n "$EXECUTABLE"
+          test -x "$APP/Contents/MacOS/$EXECUTABLE"
+          echo "Bundle executable exists and is executable: $EXECUTABLE"
+
+          # Package the original Xcode output: no Developer ID identity or full app-bundle seal.
+          ditto -c -k --sequesterRsrc --keepParent "$APP" Translator-macOS-no-developer-id.zip
+          unzip -tq Translator-macOS-no-developer-id.zip
+
+          VERIFY_DIR="$RUNNER_TEMP/translator-package-check"
+          mkdir -p "$VERIFY_DIR"
+          ditto -x -k Translator-macOS-no-developer-id.zip "$VERIFY_DIR"
+          VERIFIED_APP="$VERIFY_DIR/Translator.app"
+          test -d "$VERIFIED_APP/Contents/MacOS"
+          plutil -lint "$VERIFIED_APP/Contents/Info.plist"
+          VERIFIED_EXECUTABLE="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$VERIFIED_APP/Contents/Info.plist")"
+          test -x "$VERIFIED_APP/Contents/MacOS/$VERIFIED_EXECUTABLE"
+          echo "Original package ZIP CRC and extracted app structure validated."
+          codesign -dv --verbose=2 "$VERIFIED_APP" 2>&1 || true
+
+          # Create a diagnostic alternative: ad-hoc seal the app bundle, with no Developer ID.
+          ADHOC_APP="$RUNNER_TEMP/Translator.app"
+          ditto "$APP" "$ADHOC_APP"
+          codesign --force --deep --sign - --timestamp=none "$ADHOC_APP"
+          codesign --verify --deep --strict --verbose=2 "$ADHOC_APP"
+
+          ditto -c -k --sequesterRsrc --keepParent "$ADHOC_APP" Translator-macOS-adhoc-sealed.zip
+          unzip -tq Translator-macOS-adhoc-sealed.zip
+          ADHOC_VERIFY_DIR="$RUNNER_TEMP/translator-adhoc-check"
+          mkdir -p "$ADHOC_VERIFY_DIR"
+          ditto -x -k Translator-macOS-adhoc-sealed.zip "$ADHOC_VERIFY_DIR"
+          codesign --verify --deep --strict --verbose=2 "$ADHOC_VERIFY_DIR/Translator.app"
+          echo "Ad-hoc sealed package ZIP and extracted code signature validated."
+          codesign -dv --verbose=2 "$ADHOC_VERIFY_DIR/Translator.app" 2>&1 || true
+
+          shasum -a 256 Translator-macOS-no-developer-id.zip > Translator-macOS-no-developer-id.zip.sha256
+          shasum -a 256 Translator-macOS-adhoc-sealed.zip > Translator-macOS-adhoc-sealed.zip.sha256
+          cat Translator-macOS-no-developer-id.zip.sha256
+          cat Translator-macOS-adhoc-sealed.zip.sha256
+
+      - name: Upload macOS test builds and checksums
+        uses: actions/upload-artifact@v4
+        with:
+          name: Translator-macOS-test-builds
+          path: |
+            Translator-macOS-no-developer-id.zip
+            Translator-macOS-no-developer-id.zip.sha256
+            Translator-macOS-adhoc-sealed.zip
+            Translator-macOS-adhoc-sealed.zip.sha256
+          if-no-files-found: error
